@@ -8,21 +8,37 @@ use std::sync::Mutex;
 lazy_static! 
 {
     static ref EVALUATION_HASHMAP: Mutex<HashMap<HashableBoard, f64>> = Mutex::new(HashMap::new()); 
+    static ref RESULTS_HASHMAP: Mutex<HashMap<(HashableBoard, bool), Results>> = Mutex::new(HashMap::new()); 
+    static ref ATTACKS_HASHMAP: Mutex<HashMap<HashableBoard, (Vec<(usize, usize)>, Vec<(usize, usize)>)>> = Mutex::new(HashMap::new()); 
 }
 
+static PIECE_VALUE : f64 = 2.0;
+static MOVE_COUNT : f64 = 0.03;
+static ATTACK : f64 = 0.05;
+static DEPTH : usize = 3;
+static MAX_DEPTH: usize = 6;
+
+
 // Evaluate a board
-pub fn eval_board(board: &Board) -> f64
+pub fn eval_board(board: &Board, precise: bool) -> f64
 {
     let mut map = EVALUATION_HASHMAP.lock().unwrap();
     let h = board.get_bin();
 
-    if !map.contains_key(&h)
+    if precise
     {
-        let val = true_eval(board);
-        map.insert(h, val);
+        if !map.contains_key(&h)
+        {
+            let val = true_eval(board);
+            map.insert(h, val);
+        }
+
+        *map.get(&h).unwrap()
     }
-    
-    *map.get(&h).unwrap()
+    else
+    {
+            (board.total_value(Color::White) - board.total_value(Color::Black)) * PIECE_VALUE
+    }
 }
 
 // Actual (without the wrapper) evaluation function
@@ -34,18 +50,85 @@ pub fn true_eval(board: &Board) -> f64
 // Evaluation function for individual sides
 pub fn eval_side(board: &Board, side: Color) -> f64
 {
+    /*
+    // Set up a new board to test
     let mut b = board.clone();
     b.current_turn = side;
+
+    // Get the moves for that board
     let mut results = b.get_move_results();
     let mov_count = results.all_moves().len();
 
-    let mut result = (3 * results.check_results.len()) as f64 * 0.1;
+    // Cache the attacks
+    b.cache_attacks();
+
+    // println!("# Number of moves: {}",  mov_count);
+
+    // Initialize the result
+    let mut result = 0.0;
+
+    // Multiplier for the side that is being calculated
+    let sidem = match side {Color::Black => -1.0, Color::White => 1.0};
+
+    // Piece values
+    result += sidem * b.total_value() * PIECE_VALUE;
+
+    // Move Count
+    result += mov_count as f64 * MOVE_COUNT;
+
+    // Attacks
+    for pos in &b.attacked_by_white
+    {
+        match &b.get_cell(*pos)
+        {
+            Some(p) => 
+            {
+                result += p.get_piece_value() * ATTACK * sidem;
+            },
+            None => {}
+        }
+    }
+
+    for pos in &b.attacked_by_black
+    {
+        match &b.get_cell(*pos)
+        {
+            Some(p) => 
+            {
+                result -= p.get_piece_value() * ATTACK * sidem;
+            },
+            None => {}
+        }
+    }
+    
+
+    // Checkmate is not good if it is against you
+    if mov_count == 0 && b.check(side)
+    {
+        result -= 100000.0;
+    }
+
+    result*/
+
+    
+    let mut b = board.clone();
+    b.current_turn = side;
+    let mut results = b.get_move_results();
+    let mov_count = results.all_moves(100).len();
+
+    let mut result = (results.check_results.len()) as f64 * 0.05;
+    result += mov_count as f64 * 0.02;
 
     b.cache_attacks();
+    /*
     result += match side {Color::White => b.attacked_by_white.len(),
-                          Color::Black => b.attacked_by_black.len()} as f64 * 0.05;
+                          Color::Black => b.attacked_by_black.len()} as f64 * 0.05;*/
 
-    let piece_attack_amt = 0.01;
+    let sidem = match side {Color::Black => -1.0, Color::White => 1.0};
+
+    result += b.total_value(side) * PIECE_VALUE;
+
+    let piece_attack_amt = 0.05;
 
     match side
     {
@@ -55,18 +138,18 @@ pub fn eval_side(board: &Board, side: Color) -> f64
             {
                 match &b.get_cell(*pos)
                 {
-                    Some(_) => {result += piece_attack_amt},
+                    Some(p) => {result += piece_attack_amt * p.get_piece_value().abs()},
                     None => {}
                 }
             }
         },
         Color::Black =>
         {
-            for pos in &b.attacked_by_white
+            for pos in &b.attacked_by_black
             {
                 match &b.get_cell(*pos)
                 {
-                    Some(_) => {result += piece_attack_amt},
+                    Some(p) => {result += piece_attack_amt * p.get_piece_value().abs()},
                     None => {}
                 }
             }
@@ -75,12 +158,12 @@ pub fn eval_side(board: &Board, side: Color) -> f64
 
     if b.check(side)
     {
-        result -= 5.0;
+        result -= 2.0;
     }
 
     if mov_count == 0 && b.check(side)
     {
-        result -= 1000.0;
+        result -= 100000.0;
     }
 
     result
@@ -171,10 +254,32 @@ impl Piece
             PieceType::Bishop => 3,
             PieceType::Rook => 4,
             PieceType::Queen => 5,
-            PieceType::King => 6
+            PieceType::King => 1
         };
 
         result
+    }
+
+    /// Get the value of a piece
+    pub fn get_piece_value(&self) -> f64
+    {
+        let m = match self.color
+        {
+            Color::White => -1.0,
+            Color::Black => 1.0
+        };
+
+        let v = match self.piece
+        {
+            PieceType::Pawn => 1.0,
+            PieceType::Knight => 3.0,
+            PieceType::Bishop => 3.0,
+            PieceType::Rook => 5.0,
+            PieceType::Queen => 8.0,
+            PieceType::King => 10.0,
+        };
+
+        m * v
     }
 }
 
@@ -382,6 +487,10 @@ impl Board
     /// Get a cell by a tuple index
     pub fn get_cell(&self, pos: (usize, usize)) -> Option<Piece>
     {
+        if pos.0 >= 8 || pos.1 >= 8
+        {
+            println!("telluser {:?}", pos);
+        }
         self.data[pos.1][pos.0]
     }
 
@@ -568,27 +677,56 @@ impl Board
     /// Calculate attacks for all positions on the board
     pub fn cache_attacks(&mut self)
     {
-        for x in 0usize..8
-        {
-            for y in 0usize..8
-            {
-                if self.is_attacked_by((x, y), Color::White)
-                {
-                    self.attacked_by_white.push((x, y));
-                }
+        let mut map = ATTACKS_HASHMAP.lock().unwrap();
+        let h = self.get_bin();
 
-                if self.is_attacked_by((x, y), Color::Black)
+        if !map.contains_key(&h)
+        {
+            for x in 0usize..8
+            {
+                for y in 0usize..8
                 {
-                    self.attacked_by_black.push((x, y));
+                    if self.is_attacked_by((x, y), Color::White)
+                    {
+                        self.attacked_by_white.push((x, y));
+                    }
+
+                    if self.is_attacked_by((x, y), Color::Black)
+                    {
+                        self.attacked_by_black.push((x, y));
+                    }
                 }
             }
-        }
 
+            map.insert(h, (self.attacked_by_white.clone(), self.attacked_by_black.clone()));
+        }
+        else
+        {
+            let v = map.get(&h).unwrap();
+
+            self.attacked_by_white = v.0.clone();
+            self.attacked_by_black = v.1.clone();
+        }
+        
         self.attacks_calculated = true;
     }
 
-    /// Get all of the possible moves from this board position
     pub fn get_move_results(&mut self) -> Results
+    {
+        let mut map = RESULTS_HASHMAP.lock().unwrap();
+        let h = (self.get_bin(), self.current_turn == Color::White);
+
+        if !map.contains_key(&h)
+        {
+            let val = self.get_move_results_true();
+            map.insert(h, val);
+        }
+        
+        map.get(&h).unwrap().clone()
+    }
+
+    /// Get all of the possible moves from this board position
+    pub fn get_move_results_true(&mut self) -> Results
     {
         let mut result = Results::new();
 
@@ -782,6 +920,7 @@ impl Board
                                     }
                                 }
                             }
+                            
                         }
 
                         // King Moves
@@ -814,43 +953,45 @@ impl Board
                             }
 
                             // Castling
-                            let row = match self.current_turn {Color::White => 0, Color::Black => 7};
-
-
-                            if self.current_turn == Color::White && self.white_king_pos == (4, row) ||
-                               self.current_turn == Color::Black && self.black_king_pos == (4, row)
+                            if !self.check(self.current_turn)
                             {
-                                match self.get_cell((0, row))
+                                let row = match self.current_turn {Color::White => 0, Color::Black => 7};
+
+                                if self.current_turn == Color::White && self.white_king_pos == (4, row) ||
+                                self.current_turn == Color::Black && self.black_king_pos == (4, row)
                                 {
-                                    None => {},
-                                    Some(piece) =>
+                                    match self.get_cell((0, row))
                                     {
-                                        if piece.piece == PieceType::Rook && 
-                                           piece.color == self.current_turn &&
-                                           !self.is_blocked((1, row)) &&
-                                           !self.is_blocked((2, row)) &&
-                                           !self.is_blocked((3, row))
+                                        None => {},
+                                        Some(piece) =>
                                         {
-                                            let mut mov = Move::new(pos, (2, row));
-                                            mov.castle = true;
-                                            result.add_move(mov, &self);
+                                            if piece.piece == PieceType::Rook && 
+                                            piece.color == self.current_turn &&
+                                            !self.is_blocked((1, row)) &&
+                                            !self.is_blocked((2, row)) &&
+                                            !self.is_blocked((3, row))
+                                            {
+                                                let mut mov = Move::new(pos, (2, row));
+                                                mov.castle = true;
+                                                result.add_move(mov, &self);
+                                            }
                                         }
                                     }
-                                }
 
-                                match self.get_cell((7, row))
-                                {
-                                    None => {},
-                                    Some(piece) =>
+                                    match self.get_cell((7, row))
                                     {
-                                        if piece.piece == PieceType::Rook && 
-                                           piece.color == self.current_turn &&
-                                           !self.is_blocked((5, row)) &&
-                                           !self.is_blocked((6, row))
+                                        None => {},
+                                        Some(piece) =>
                                         {
-                                            let mut mov = Move::new(pos, (6, row));
-                                            mov.castle = true;
-                                            result.add_move(mov, &self);
+                                            if piece.piece == PieceType::Rook && 
+                                            piece.color == self.current_turn &&
+                                            !self.is_blocked((5, row)) &&
+                                            !self.is_blocked((6, row))
+                                            {
+                                                let mut mov = Move::new(pos, (6, row));
+                                                mov.castle = true;
+                                                result.add_move(mov, &self);
+                                            }
                                         }
                                     }
                                 }
@@ -867,10 +1008,17 @@ impl Board
     // Check if a position is blocked
     pub fn is_blocked(&self, pos: (usize, usize)) -> bool
     {
-        match self.get_cell(pos)
+        if pos.0 >= 8 || pos.1 >= 8
         {
-            None => false,
-            Some(_) => true
+            true
+        }
+        else
+        {
+            match self.get_cell(pos)
+            {
+                None => false,
+                Some(_) => true
+            }
         }
     }
 
@@ -897,13 +1045,13 @@ impl Board
     // Get best move
     pub fn get_best_move(&mut self) -> Move
     {
-        let results = self.get_move_results().all_moves();
+        let results = self.get_move_results().all_moves(100);
 
-        let mut best = (match self.current_turn {Color::White => -10000.0, Color::Black => 10000.0}, Move::new((0, 0), (0, 0)));
+        let mut best = (match self.current_turn {Color::White => -10000000000000000000000000000.0, Color::Black => 10000000000000000000000000000.0}, Move::new((0, 0), (0, 0)));
 
         for mov in &results
         {
-            let score = self.board_for_move(&mov).min_max(2, -10000000.0, 10000000.0);
+            let score = self.board_for_move(&mov).min_max(DEPTH, -10000000000000000000000000000.0, 10000000000000000000000000000.0, 0);
             if self.current_turn == Color::White && score > best.0
             {
                 best = (score, *mov);
@@ -915,26 +1063,43 @@ impl Board
             }
 
         }
-
+    
         best.1
     }
 
     // Min Max
-    pub fn min_max(&mut self, depth: usize, mut alpha: f64, mut beta: f64) -> f64
+    pub fn min_max(&mut self, depth: usize, mut alpha: f64, mut beta: f64, count: usize) -> f64
     {
         if depth == 0
         {
-            eval_board(&self)
+            let m = match self.current_turn {Color::White => 1.0, Color::Black => -1.0};
+            eval_board(&self, true) + m * 0.1 * eval_board(&self, false)
         }
         else
         {
-            let results = self.get_move_results().all_moves();
-
-            let mut best = (match self.current_turn {Color::White => -10000.0, Color::Black => 10000.0}, Move::new((0, 0), (0, 0)));
-
-            for mov in &results
+            let results = 
+            
+            if depth == 1
             {
-                let score = self.board_for_move(&mov).min_max(depth-1, alpha, beta);
+                self.get_move_results().all_moves(3)
+            }
+            else
+            {
+                self.get_move_results().all_moves(3)
+            };
+
+            let mut best = (match self.current_turn {Color::White => -100000000000000.0, Color::Black => 100000000000000.0}, Move::new((0, 0), (0, 0)));
+
+            let next = depth - 1;
+
+            for (i, mov) in results.iter().enumerate()
+            {
+                if count >= DEPTH && i % (3 + count - DEPTH) != 0
+                {
+                    continue;
+                }
+
+                let score = self.board_for_move(&mov).min_max(next, alpha, beta, count + 1);
                 if self.current_turn == Color::White
                 {
                     if score > best.0
@@ -975,6 +1140,28 @@ impl Board
 
             best.0
         }
+    }
+
+    // Get the total value of all of the pieces on the board
+    pub fn total_value(&self, side: Color) -> f64
+    {
+        let mut total = 0.0;
+
+        for row in &self.data
+        {
+            for p in row
+            {
+                if p.is_some()
+                {
+                    if p.unwrap().color == side
+                    {
+                        total += p.unwrap().get_piece_value().abs();
+                    }
+                }
+            }
+        }
+
+        total
     }
 }
 
@@ -1135,9 +1322,10 @@ impl Results
     pub fn add_move(&mut self, mov: Move, board: &Board)
     {
         let mut post_move_board = board.board_for_move(&mov);
+
         let end_piece = board.get_cell(mov.end);
 
-        // Make supre the move doesn't put this side in check
+        // Make sure the move doesn't put this side in check
         if post_move_board.check(board.current_turn)
         {
             return;
@@ -1162,19 +1350,81 @@ impl Results
     }
 
     /// Get All Moves
-    pub fn all_moves(&mut self) -> Vec<Move>
+    pub fn all_moves(&mut self, priority: usize) -> Vec<Move>
     {
-        let mut rng = rand::thread_rng();
+        // let mut rng = rand::thread_rng();
         let mut result = Vec::<Move>::new();
 
-        self.check_results.shuffle(&mut rng);
-        self.take_results.shuffle(&mut rng);
-        self.other_results.shuffle(&mut rng);
+        // self.check_results.shuffle(&mut rng);
+        // self.take_results.shuffle(&mut rng);
+        // self.other_results.shuffle(&mut rng);
 
-
+        /*
         result.append(&mut self.check_results);
-        result.append(&mut self.take_results);
-        result.append(&mut self.other_results);
+
+        if priority > 0
+        {
+            result.append(&mut self.take_results);
+        }
+        
+        if priority > 1
+        {
+            result.append(&mut self.other_results);
+        }*/
+
+        let mod_val : usize = 
+            match priority
+            {
+                0 => 4,
+                1 => 3,
+                2 => 2,
+                _ => 1
+            };
+        
+        if mod_val == 0
+        {
+            result.append(&mut self.check_results);
+        }
+        else
+        {
+            for (i, v) in self.check_results.iter().enumerate()
+            {
+                if i % mod_val == 0
+                {
+                    result.push(*v);
+                }
+            }
+        }
+
+        if (mod_val.max(1) - 1) == 0
+        {
+            result.append(&mut self.take_results);
+        }
+        else
+        {
+            for (i, v) in self.take_results.iter().enumerate()
+            {
+                if i % (mod_val.max(1) - 1) == 0
+                {
+                    result.push(*v);
+                }
+            }
+        }
+
+        if (mod_val.max(2) - 2) == 0
+        {
+            result.append(&mut self.other_results);
+        }
+        else
+        {
+            for (i, v) in self.other_results.iter().enumerate()
+            {
+                if i % (mod_val.max(2) - 2) == 0
+                {
+                    result.push(*v);
+                }
+            }
+        }
 
         result
     }

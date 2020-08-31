@@ -81,7 +81,7 @@ impl Engine
         println!("tellics say     RustChess v0.1.0");
         println!("tellics say     Carter Plasek");
         println!("feature myname=\"RustChess v0.1.0\"");
-        println!("feature ping=1 debug=1 sigint=0 done=0");
+        println!("feature ping=1 debug=1 sigint=0 done=0 sigterm=0 sigkill=0");
         println!("feature done=1");
     }
 
